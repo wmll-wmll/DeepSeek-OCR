@@ -1,24 +1,38 @@
 from transformers import AutoModel, AutoTokenizer
 import torch
 import os
+import ssl
 
+# Hack to bypass SSL verification for Hugging Face download
+os.environ['CURL_CA_BUNDLE'] = ''
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
 
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 
-model_name = 'deepseek-ai/DeepSeek-OCR'
+model_name = r'../../model'
 
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-model = AutoModel.from_pretrained(model_name, _attn_implementation='flash_attention_2', trust_remote_code=True, use_safetensors=True)
+# Windows support: switch to sdpa or eager instead of flash_attention_2
+model = AutoModel.from_pretrained(model_name, _attn_implementation='eager', trust_remote_code=True, use_safetensors=True)
 model = model.eval().cuda().to(torch.bfloat16)
 
 
 
 # prompt = "<image>\nFree OCR. "
 prompt = "<image>\n<|grounding|>Convert the document to markdown. "
-image_file = 'your_image.jpg'
-output_path = 'your/output/dir'
+# Use an example image from assets
+image_file = r'../../assets/show1.jpg'
+output_path = r'../../output'
+
+if not os.path.exists(output_path):
+    os.makedirs(output_path)
 
 
 
