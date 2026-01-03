@@ -4,3 +4,9 @@ output/
 .idea/
 __pycache__/
 *.pyc
+temp_uploads/
+node_modules/
+dist/
+npm-debug.log
+yarn-error.log
+.DS_Store

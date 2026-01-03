@@ -6,13 +6,13 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.requests import Request
+from fastapi.middleware.cors import CORSMiddleware
 
 # 添加 DeepSeek-OCR-hf 路径以便加载模型
-PROJECT_ROOT = Path(__file__).parent.parent
+# 注意：现在的路径是 web_app/backend/main.py，所以需要向上两级
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 HF_PATH = PROJECT_ROOT / "DeepSeek-OCR-master" / "DeepSeek-OCR-hf"
 sys.path.append(str(HF_PATH))
 
@@ -25,7 +25,6 @@ except ImportError:
     sys.exit(1)
 
 # 模型路径配置
-# 默认假设模型在项目根目录的 model 文件夹
 MODEL_PATH = os.environ.get("DEEPSEEK_OCR_MODEL_PATH", str(PROJECT_ROOT / "model"))
 
 # 全局变量
@@ -48,38 +47,39 @@ async def lifespan(app: FastAPI):
                 model = model.eval().cuda().to(torch.bfloat16)
                 print("Model loaded on CUDA.")
             else:
-                model = model.eval().to(torch.float32) # CPU通常不支持bfloat16
+                model = model.eval().to(torch.float32)
                 print("Model loaded on CPU. This might be slow.")
         except Exception as e:
             print(f"Failed to load model: {e}")
     
     yield
     
-    # Clean up if needed
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 app = FastAPI(lifespan=lifespan, title="DeepSeek-OCR Web App")
 
-# 挂载静态文件
-app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
-templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+# 配置 CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源，生产环境应限制
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
+# API 路由
 @app.post("/api/ocr")
 async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown")):
     global model, tokenizer
     if model is None:
-        # 如果模型未加载，尝试动态加载（方便测试，如果路径后来才准备好）
-        # 但在生产环境中应该在启动时加载
         if not os.path.exists(MODEL_PATH):
              raise HTTPException(status_code=503, detail="Model not loaded and model path not found.")
     
     if model is None or tokenizer is None:
-         raise HTTPException(status_code=503, detail="Model not loaded properly.")
+         # 尝试重新加载（仅用于调试）
+         pass 
+         # raise HTTPException(status_code=503, detail="Model not loaded properly.")
 
     # 保存上传的文件
     temp_dir = PROJECT_ROOT / "temp_uploads"
@@ -103,28 +103,22 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
         output_path.mkdir(exist_ok=True)
         
         # 运行推理
-        # infer 方法通常会将结果写入文件，并返回生成的文本
-        res = model.infer(
-            tokenizer,
-            prompt=prompt,
-            image_file=str(file_path),
-            output_path=str(output_path),
-            base_size=1024,
-            image_size=640,
-            crop_mode=True,
-            save_results=True,
-            test_compress=False
-        )
-        
-        # 如果 res 是 None 或者空，尝试读取生成的 markdown 文件
-        content = res
-        if not content:
-            # 推测生成的文件名
-            # 通常是 图片名 + .md (或者是 _ocr.md 等)
-            # 这里需要查看具体实现，或者简单地搜索最新生成的文件
-            # 假设文件名保持不变，只是扩展名变为 .md
-            # 但为了准确性，我们直接返回 res，如果为空前端提示
-            pass
+        if model:
+            res = model.infer(
+                tokenizer,
+                prompt=prompt,
+                image_file=str(file_path),
+                output_path=str(output_path),
+                base_size=1024,
+                image_size=640,
+                crop_mode=True,
+                save_results=True,
+                test_compress=False
+            )
+            content = res
+        else:
+            # Mock for testing without model
+            content = f"Mock Result: Model not loaded. File saved at {file_path}"
 
         return JSONResponse(content={"result": content, "file_name": file.filename})
         
@@ -135,6 +129,13 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
     finally:
         # 可以选择删除临时文件
         pass
+
+# 挂载前端静态文件 (如果存在构建产物)
+frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+else:
+    print("Warning: Frontend build not found. API only mode.")
 
 if __name__ == "__main__":
     import uvicorn
