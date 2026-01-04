@@ -189,17 +189,23 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
                 print(f"Generated files: {generated_files}")
                 
                 if generated_files:
-                    # 优先找 .md
-                    md_files = [f for f in generated_files if f.suffix.lower() == '.md']
-                    if md_files:
-                        target_file = md_files[0]
+                    # 过滤掉文件夹（例如 images 目录）
+                    file_list = [f for f in generated_files if f.is_file()]
+                    
+                    if file_list:
+                        # 优先找 .md
+                        md_files = [f for f in file_list if f.suffix.lower() == '.md']
+                        if md_files:
+                            target_file = md_files[0]
+                        else:
+                            # 否则取第一个文件
+                            target_file = file_list[0]
+                            
+                        print(f"Reading result from: {target_file}")
+                        with open(target_file, "r", encoding="utf-8") as f:
+                            output_content = f.read()
                     else:
-                        # 否则取第一个文件
-                        target_file = generated_files[0]
-                        
-                    print(f"Reading result from: {target_file}")
-                    with open(target_file, "r", encoding="utf-8") as f:
-                        output_content = f.read()
+                        print("No output files found (only directories?)")
                 
                 # 如果没读到文件内容，尝试使用返回值
                 if not output_content and isinstance(res, str):
