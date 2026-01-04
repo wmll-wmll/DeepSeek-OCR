@@ -30,31 +30,34 @@ MODEL_PATH = os.environ.get("DEEPSEEK_OCR_MODEL_PATH", str(PROJECT_ROOT / "model
 # 全局变量
 model = None
 tokenizer = None
+loading_error = None  # 用于存储加载过程中的错误信息
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model, tokenizer
+    global model, tokenizer, loading_error
     print(f"Loading model from {MODEL_PATH}...")
     if not os.path.exists(MODEL_PATH):
-        print(f"Warning: Model path {MODEL_PATH} does not exist. Please download the model and place it in the 'model' directory, or set DEEPSEEK_OCR_MODEL_PATH.")
+        error_msg = f"Model path {MODEL_PATH} does not exist. Please download the model."
+        print(f"Warning: {error_msg}")
+        loading_error = error_msg
     else:
         try:
             tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
             
-            # 准备模型加载参数
+            # 基础模型参数
             model_kwargs = {
                 "trust_remote_code": True,
                 "use_safetensors": True,
                 "_attn_implementation": 'eager'
             }
 
-            # 显存优化逻辑
+            # 显存优化逻辑 (带自动回退)
             if torch.cuda.is_available():
-                # 检查 bitsandbytes 是否可用（用于 4-bit 量化）
                 try:
+                    # 尝试启用 4-bit 量化
                     from transformers import BitsAndBytesConfig
                     import bitsandbytes as bnb
-                    print("BitsAndBytes detected. Enabling 4-bit quantization for memory optimization...")
+                    print("BitsAndBytes detected. Attempting to enable 4-bit quantization...")
                     
                     quantization_config = BitsAndBytesConfig(
                         load_in_4bit=True,
@@ -64,20 +67,37 @@ async def lifespan(app: FastAPI):
                     )
                     model_kwargs["quantization_config"] = quantization_config
                     model_kwargs["device_map"] = "auto"
-                except ImportError:
-                    print("Warning: bitsandbytes not found. 4-bit quantization is NOT available.")
-                    print("Falling back to bfloat16 with device_map='auto'. This may require >14GB VRAM.")
-                    model_kwargs["device_map"] = "auto"
-                    model_kwargs["torch_dtype"] = torch.bfloat16
+                    
+                    # 尝试加载模型（如果在这一步 bnb 报错，会触发异常并进入回退逻辑）
+                    print("Loading model with Quantization...")
+                    model = AutoModel.from_pretrained(MODEL_PATH, **model_kwargs)
+                    print("Model loaded successfully with 4-bit Quantization.")
+                    
+                except Exception as e:
+                    print(f"Warning: Quantization failed ({str(e)}).")
+                    print("Falling back to standard loading with device_map='auto' (managed by accelerate).")
+                    print("This may use system RAM if VRAM is insufficient.")
+                    
+                    # 重置参数，移除量化配置
+                    model_kwargs = {
+                        "trust_remote_code": True,
+                        "use_safetensors": True,
+                        "_attn_implementation": 'eager',
+                        "device_map": "auto",
+                        "torch_dtype": torch.bfloat16
+                    }
+                    
+                    # 再次尝试加载
+                    model = AutoModel.from_pretrained(MODEL_PATH, **model_kwargs)
+                    print("Model loaded successfully with Fallback settings.")
             else:
                 print("CUDA not available. Loading on CPU (Performance will be limited).")
                 model_kwargs["torch_dtype"] = torch.float32
-
-            # 加载模型
-            model = AutoModel.from_pretrained(MODEL_PATH, **model_kwargs)
-            print("Model loaded successfully.")
+                model = AutoModel.from_pretrained(MODEL_PATH, **model_kwargs)
+                print("Model loaded successfully on CPU.")
             
         except Exception as e:
+            loading_error = str(e)
             print(f"Failed to load model: {e}")
             import traceback
             traceback.print_exc()
@@ -101,12 +121,18 @@ app.add_middleware(
 # API 路由
 @app.post("/api/ocr")
 async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown")):
-    global model, tokenizer
+    global model, tokenizer, loading_error
+    
     if model is None:
-        if not os.path.exists(MODEL_PATH):
-             raise HTTPException(status_code=503, detail="Model not loaded and model path not found.")
-        # 如果模型存在但加载失败，尝试重新加载的逻辑可以在这里添加，或者直接报错
-        raise HTTPException(status_code=503, detail="Model not loaded properly. Check server logs.")
+        detail_msg = "Model not loaded."
+        if loading_error:
+            detail_msg += f" Error: {loading_error}"
+        elif not os.path.exists(MODEL_PATH):
+            detail_msg += " Model path not found."
+        else:
+            detail_msg += " Check server logs for details."
+            
+        raise HTTPException(status_code=503, detail=detail_msg)
 
     # 保存上传的文件
     temp_dir = PROJECT_ROOT / "temp_uploads"
@@ -126,23 +152,10 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
             prompt = "<image>\n<|grounding|>Convert the document to markdown. "
             
         # 调用模型进行预测
-        # 注意：需要适配 DeepSeek-OCR 的调用方式
-        # 这里假设模型对象有类似 generate 或 chat 的方法，或者我们需要使用 helper
-        # 根据 easy_ocr.py，通常是:
-        # result = model.chat(tokenizer, image_path, prompt) 
-        # 但这里的 model 是 AutoModel 加载的，可能只是一个 transformer model
-        # 让我们查看 DeepSeek-OCR-hf/easy_ocr.py 了解正确的调用方式
-        
-        # 假设 model 是 DeepseekOCRModel (因为 trust_remote_code=True)
-        # 通常自定义模型会有 .chat 或 .generate 方法封装
-        # 让我们假设它有 chat 方法，如果报错再修复
-        
-        # 临时修复：使用 hasattr 检查
         if hasattr(model, 'chat'):
             response = model.chat(tokenizer, str(file_path), prompt)
         elif hasattr(model, 'generate'):
              # 如果没有 chat 方法，可能需要手动处理 inputs
-             # 这里先保留原来的逻辑假设，或者抛出更详细的错误
              raise HTTPException(status_code=500, detail="Model does not support 'chat' method.")
         else:
              raise HTTPException(status_code=500, detail="Unknown model interface.")
@@ -163,7 +176,6 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
                 pass
 
 # 挂载前端静态文件 (生产环境)
-# 只有在 dist 目录存在时才挂载
 DIST_DIR = PROJECT_ROOT / "web_app" / "frontend" / "dist"
 if os.path.exists(DIST_DIR):
     app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="static")
