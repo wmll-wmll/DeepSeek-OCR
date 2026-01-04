@@ -45,7 +45,7 @@ if (-not (Test-Path $DistDir)) {
 # 检查虚拟环境
 if (Test-Path "$ScriptDir\.venv\Scripts\Activate.ps1") {
     Write-Host "正在激活虚拟环境..."
-    & "$ScriptDir\.venv\Scripts\Activate.ps1"
+    . "$ScriptDir\.venv\Scripts\Activate.ps1"
 } else {
     Write-Host "警告: 未找到虚拟环境 (.venv)，尝试直接运行..."
 }
@@ -54,7 +54,7 @@ if (Test-Path "$ScriptDir\.venv\Scripts\Activate.ps1") {
 Write-Host "正在检查依赖..."
 try {
     # 确保 accelerate 已安装
-    python -c "import accelerate" 2>$null
+    pip show accelerate >$null 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "正在安装 accelerate..."
         pip install accelerate>=0.26.0
