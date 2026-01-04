@@ -66,6 +66,9 @@ try {
         Write-Host "尝试安装 bitsandbytes (Windows 优化版) 以支持 4-bit 量化..."
         pip install https://github.com/jllllll/bitsandbytes-windows-webui/releases/download/wheels/bitsandbytes-0.41.1-py3-none-win_amd64.whl
     }
+    
+    # 自动修复 bitsandbytes 的 CUDA 兼容性
+    python "$ScriptDir\fix_bnb.py"
 } catch {
     Write-Host "检查依赖时警告: $_"
 }
