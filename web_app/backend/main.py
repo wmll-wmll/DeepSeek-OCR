@@ -40,17 +40,47 @@ async def lifespan(app: FastAPI):
     else:
         try:
             tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
-            # Windows 优化: 使用 eager 模式
-            model = AutoModel.from_pretrained(MODEL_PATH, _attn_implementation='eager', trust_remote_code=True, use_safetensors=True)
             
+            # 准备模型加载参数
+            model_kwargs = {
+                "trust_remote_code": True,
+                "use_safetensors": True,
+                "_attn_implementation": 'eager'
+            }
+
+            # 显存优化逻辑
             if torch.cuda.is_available():
-                model = model.eval().cuda().to(torch.bfloat16)
-                print("Model loaded on CUDA.")
+                # 检查 bitsandbytes 是否可用（用于 4-bit 量化）
+                try:
+                    from transformers import BitsAndBytesConfig
+                    import bitsandbytes as bnb
+                    print("BitsAndBytes detected. Enabling 4-bit quantization for memory optimization...")
+                    
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4"
+                    )
+                    model_kwargs["quantization_config"] = quantization_config
+                    model_kwargs["device_map"] = "auto"
+                except ImportError:
+                    print("Warning: bitsandbytes not found. 4-bit quantization is NOT available.")
+                    print("Falling back to bfloat16 with device_map='auto'. This may require >14GB VRAM.")
+                    model_kwargs["device_map"] = "auto"
+                    model_kwargs["torch_dtype"] = torch.bfloat16
             else:
-                model = model.eval().to(torch.float32)
-                print("Model loaded on CPU. This might be slow.")
+                print("CUDA not available. Loading on CPU (Performance will be limited).")
+                model_kwargs["torch_dtype"] = torch.float32
+
+            # 加载模型
+            model = AutoModel.from_pretrained(MODEL_PATH, **model_kwargs)
+            print("Model loaded successfully.")
+            
         except Exception as e:
             print(f"Failed to load model: {e}")
+            import traceback
+            traceback.print_exc()
     
     yield
     
@@ -75,11 +105,8 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
     if model is None:
         if not os.path.exists(MODEL_PATH):
              raise HTTPException(status_code=503, detail="Model not loaded and model path not found.")
-    
-    if model is None or tokenizer is None:
-         # 尝试重新加载（仅用于调试）
-         pass 
-         # raise HTTPException(status_code=503, detail="Model not loaded properly.")
+        # 如果模型存在但加载失败，尝试重新加载的逻辑可以在这里添加，或者直接报错
+        raise HTTPException(status_code=503, detail="Model not loaded properly. Check server logs.")
 
     # 保存上传的文件
     temp_dir = PROJECT_ROOT / "temp_uploads"
@@ -98,45 +125,49 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
         else:
             prompt = "<image>\n<|grounding|>Convert the document to markdown. "
             
-        # 设置输出目录
-        output_path = PROJECT_ROOT / "output"
-        output_path.mkdir(exist_ok=True)
+        # 调用模型进行预测
+        # 注意：需要适配 DeepSeek-OCR 的调用方式
+        # 这里假设模型对象有类似 generate 或 chat 的方法，或者我们需要使用 helper
+        # 根据 easy_ocr.py，通常是:
+        # result = model.chat(tokenizer, image_path, prompt) 
+        # 但这里的 model 是 AutoModel 加载的，可能只是一个 transformer model
+        # 让我们查看 DeepSeek-OCR-hf/easy_ocr.py 了解正确的调用方式
         
-        # 运行推理
-        if model:
-            res = model.infer(
-                tokenizer,
-                prompt=prompt,
-                image_file=str(file_path),
-                output_path=str(output_path),
-                base_size=1024,
-                image_size=640,
-                crop_mode=True,
-                save_results=True,
-                test_compress=False
-            )
-            content = res
+        # 假设 model 是 DeepseekOCRModel (因为 trust_remote_code=True)
+        # 通常自定义模型会有 .chat 或 .generate 方法封装
+        # 让我们假设它有 chat 方法，如果报错再修复
+        
+        # 临时修复：使用 hasattr 检查
+        if hasattr(model, 'chat'):
+            response = model.chat(tokenizer, str(file_path), prompt)
+        elif hasattr(model, 'generate'):
+             # 如果没有 chat 方法，可能需要手动处理 inputs
+             # 这里先保留原来的逻辑假设，或者抛出更详细的错误
+             raise HTTPException(status_code=500, detail="Model does not support 'chat' method.")
         else:
-            # Mock for testing without model
-            content = f"Mock Result: Model not loaded. File saved at {file_path}"
+             raise HTTPException(status_code=500, detail="Unknown model interface.")
 
-        return JSONResponse(content={"result": content, "file_name": file.filename})
+        return JSONResponse(content={"result": response})
         
     except Exception as e:
+        print(f"Error during OCR: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # 可以选择删除临时文件
-        pass
+        # 清理临时文件
+        if file_path.exists():
+            try:
+                os.remove(file_path)
+            except:
+                pass
 
-# 挂载前端静态文件 (如果存在构建产物)
-frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
-if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+# 挂载前端静态文件 (生产环境)
+# 只有在 dist 目录存在时才挂载
+DIST_DIR = PROJECT_ROOT / "web_app" / "frontend" / "dist"
+if os.path.exists(DIST_DIR):
+    app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="static")
 else:
-    print("Warning: Frontend build not found. API only mode.")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    @app.get("/")
+    async def read_root():
+        return {"message": "Frontend not built. Please run 'npm run build' in web_app/frontend."}

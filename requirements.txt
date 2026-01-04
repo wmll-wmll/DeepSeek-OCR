@@ -11,3 +11,4 @@ fastapi
 uvicorn
 python-multipart
 jinja2
+accelerate>=0.26.0

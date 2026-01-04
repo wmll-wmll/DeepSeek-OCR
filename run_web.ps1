@@ -50,6 +50,24 @@ if (Test-Path "$ScriptDir\.venv\Scripts\Activate.ps1") {
     Write-Host "警告: 未找到虚拟环境 (.venv)，尝试直接运行..."
 }
 
+# 检查并安装量化依赖 (bitsandbytes for Windows)
+Write-Host "正在检查量化依赖 (用于节省显存)..."
+try {
+    python -c "import bitsandbytes" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "未检测到 bitsandbytes，正在为 Windows 安装优化版 (支持 4-bit 量化)..."
+        # 安装 accelerate
+        pip install accelerate>=0.26.0
+        # 安装 Windows 兼容版 bitsandbytes
+        pip install https://github.com/jllllll/bitsandbytes-windows-webui/releases/download/wheels/bitsandbytes-0.41.1-py3-none-win_amd64.whl
+        Write-Host "依赖安装完成。"
+    } else {
+        Write-Host "量化依赖已安装。"
+    }
+} catch {
+    Write-Host "检查依赖时警告: $_"
+}
+
 # 设置环境变量
 $env:PYTHONPATH = "$ScriptDir;$env:PYTHONPATH"
 $env:DEEPSEEK_OCR_MODEL_PATH = "$ScriptDir\model"
