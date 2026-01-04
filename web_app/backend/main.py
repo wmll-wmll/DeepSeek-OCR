@@ -152,12 +152,37 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
             prompt = "<image>\n<|grounding|>Convert the document to markdown. "
             
         # 调用模型进行预测
-        if hasattr(model, 'chat'):
+        if hasattr(model, 'infer'):
+            # 创建临时输出目录
+            temp_output_dir = PROJECT_ROOT / "temp_outputs"
+            temp_output_dir.mkdir(exist_ok=True)
+            
+            try:
+                # 参考 easy_ocr.py 的参数
+                print("Calling model.infer...")
+                response = model.infer(
+                    tokenizer, 
+                    prompt=prompt, 
+                    image_file=str(file_path), 
+                    output_path=str(temp_output_dir), 
+                    base_size=1024, 
+                    image_size=640, 
+                    crop_mode=True, 
+                    save_results=False, 
+                    test_compress=False
+                )
+            except Exception as e:
+                print(f"Error in model.infer: {e}")
+                raise e
+                
+        elif hasattr(model, 'chat'):
             response = model.chat(tokenizer, str(file_path), prompt)
         elif hasattr(model, 'generate'):
              # 如果没有 chat 方法，可能需要手动处理 inputs
              raise HTTPException(status_code=500, detail="Model does not support 'chat' method.")
         else:
+             print(f"Model type: {type(model)}")
+             print(f"Model attributes: {dir(model)}")
              raise HTTPException(status_code=500, detail="Unknown model interface.")
 
         return JSONResponse(content={"result": response})
