@@ -61,13 +61,21 @@ try {
     }
     
     # 尝试安装 bitsandbytes (可选)
-    python -c "import bitsandbytes" 2>$null
+    # 只有当 python -c "import bitsandbytes" 失败且没有被 patch 过时才尝试安装
+    # 实际上，如果已经安装了但只是缺少 dll，import 可能会失败，也可能会成功但报错
+    # 这里我们只检查是否完全没安装
+    
+    # 简单的检查方式：pip show bitsandbytes
+    pip show bitsandbytes >$null 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "尝试安装 bitsandbytes (Windows 优化版) 以支持 4-bit 量化..."
+        Write-Host "bitsandbytes 未安装，正在尝试安装 Windows 优化版以支持 4-bit 量化..."
         pip install https://github.com/jllllll/bitsandbytes-windows-webui/releases/download/wheels/bitsandbytes-0.41.1-py3-none-win_amd64.whl
+    } else {
+         Write-Host "bitsandbytes 已安装。"
     }
     
     # 自动修复 bitsandbytes 的 CUDA 兼容性
+    # 这个脚本很快，每次运行也没关系，因为它会检查文件是否存在
     python "$ScriptDir\fix_bnb.py"
 } catch {
     Write-Host "检查依赖时警告: $_"
