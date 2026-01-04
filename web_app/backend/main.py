@@ -32,6 +32,8 @@ model = None
 tokenizer = None
 loading_error = None  # 用于存储加载过程中的错误信息
 
+import uuid
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model, tokenizer, loading_error
@@ -153,14 +155,19 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
             
         # 调用模型进行预测
         if hasattr(model, 'infer'):
-            # 创建临时输出目录
-            temp_output_dir = PROJECT_ROOT / "temp_outputs"
-            temp_output_dir.mkdir(exist_ok=True)
+            # 创建唯一的临时输出目录
+            request_id = str(uuid.uuid4())
+            temp_output_dir = PROJECT_ROOT / "temp_outputs" / request_id
+            temp_output_dir.mkdir(parents=True, exist_ok=True)
             
             try:
-                # 参考 easy_ocr.py 的参数
-                print("Calling model.infer...")
-                response = model.infer(
+                print(f"Calling model.infer with save_results=True, output_dir={temp_output_dir}...")
+                
+                # model.infer 会根据输入文件名生成输出文件名
+                # 例如输入 test.jpg，输出可能是 test.md 或 test.txt
+                input_filename_stem = file_path.stem
+                
+                res = model.infer(
                     tokenizer, 
                     prompt=prompt, 
                     image_file=str(file_path), 
@@ -168,12 +175,50 @@ async def ocr_endpoint(file: UploadFile = File(...), mode: str = Form("markdown"
                     base_size=1024, 
                     image_size=640, 
                     crop_mode=True, 
-                    save_results=False, 
+                    save_results=True, 
                     test_compress=False
                 )
+                
+                print(f"model.infer returned: {type(res)}")
+                
+                # 尝试读取输出文件
+                output_content = ""
+                
+                # 查找生成的文件
+                generated_files = list(temp_output_dir.glob("*"))
+                print(f"Generated files: {generated_files}")
+                
+                if generated_files:
+                    # 优先找 .md
+                    md_files = [f for f in generated_files if f.suffix.lower() == '.md']
+                    if md_files:
+                        target_file = md_files[0]
+                    else:
+                        # 否则取第一个文件
+                        target_file = generated_files[0]
+                        
+                    print(f"Reading result from: {target_file}")
+                    with open(target_file, "r", encoding="utf-8") as f:
+                        output_content = f.read()
+                
+                # 如果没读到文件内容，尝试使用返回值
+                if not output_content and isinstance(res, str):
+                    output_content = res
+                    
+                if not output_content:
+                    output_content = "OCR completed but no output content could be retrieved."
+                    
+                response = output_content
+
             except Exception as e:
                 print(f"Error in model.infer: {e}")
                 raise e
+            finally:
+                # 清理临时目录
+                try:
+                    shutil.rmtree(temp_output_dir)
+                except Exception as cleanup_error:
+                    print(f"Failed to cleanup temp dir {temp_output_dir}: {cleanup_error}")
                 
         elif hasattr(model, 'chat'):
             response = model.chat(tokenizer, str(file_path), prompt)
